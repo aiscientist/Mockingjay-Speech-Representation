@@ -19,6 +19,7 @@ import librosa
 import numpy as np
 from torch.optim import Adam
 from tqdm import tqdm, trange
+import torch.nn as nn
 import torch.nn.functional as F
 from tensorboardX import SummaryWriter
 from dataloader import get_Dataloader
@@ -128,6 +129,16 @@ class Downstream_Solver(Solver):
                                             class_num=self.dataloader.dataset.class_num,
                                             task=self.task,
                                             dconfig=self.config['downstream']['rnn']).to(self.device)
+        
+        self.valid_layerids = self.config['downstream']['valid_layers']
+        layer_num = self.config['mockingjay']['num_hidden_layers']
+        assert len(self.valid_layerids) < layer_num
+        self.connectors = nn.ParameterDict()
+        for idx in range(len(self.valid_layerids) - 1):
+            if self.valid_layerids[idx] == self.valid_layerids[idx + 1] - 1:
+                continue
+            self.connectors[str(idx)] = nn.Parameter(torch.eye(self.config['mockingjay']['hidden_size']))
+        self.connectors.to(self.device)
 
         if not inference and self.fine_tune:
             # Setup Fine tune optimizer
@@ -138,7 +149,8 @@ class Downstream_Solver(Solver):
                                                       warmup_proportion=self.config['optimizer']['warmup_proportion'],
                                                       training_steps=self.total_steps)
         elif not inference:
-            self.optimizer = Adam(self.classifier.parameters(), lr=self.learning_rate, betas=(0.9, 0.999))
+            paras = list(self.classifier.parameters()) + list(self.connectors.parameters())
+            self.optimizer = Adam(paras, lr=self.learning_rate, betas=(0.9, 0.999))
             self.classifier.train()
         else:
             self.classifier.eval()
@@ -151,6 +163,7 @@ class Downstream_Solver(Solver):
         if model_all:
             all_states = {
                 'Classifier': self.classifier.state_dict(),
+                'Connectors': self.connectors.state_dict(),
                 'Mockingjay': self.mockingjay.mockingjay.state_dict() if self.fine_tune else None,
                 'Optimizer': self.optimizer.state_dict(),
                 'Global_step': self.global_step,
@@ -162,6 +175,7 @@ class Downstream_Solver(Solver):
         else:
             all_states = {
                 'Classifier': self.classifier.state_dict(),
+                'Connectors': self.connectors.state_dict(),
                 'Settings': {
                     'Config': self.config,
                     'Paras': self.paras,
@@ -191,6 +205,12 @@ class Downstream_Solver(Solver):
                 self.classifier.load_state_dict(all_states['Classifier'])
                 self.verbose('[Classifier] - Loaded')
             except: self.verbose('[Classifier - X]')
+
+        if 'Connectors' in self.load_model_list:
+            try:
+                self.connectors.load_state_dict(all_states['Connectors'])
+                self.verbose('[Connectors] - Loaded')
+            except: self.verbose('[Connectors - X]')
 
         if 'Optimizer' in self.load_model_list and not inference:
             try:
@@ -287,7 +307,7 @@ class Downstream_Trainer(Downstream_Solver):
                         features = self.up_sample_frames(features[0].squeeze(0)) if 'speaker' not in self.task else features[0].squeeze(0)
                     elif self.run_mockingjay:
                         # representations shape: (batch_size, layer, seq_len, feature)
-                        representations = self.mockingjay.forward(features, tile=False if 'speaker' in self.task else True, process_from_loader=True)
+                        representations = self.mockingjay.forward(features, tile=False if 'speaker' in self.task else True, process_from_loader=True, valid_layerids=self.valid_layerids, connectors=self.connectors)
                         features = self.up_sample_frames(features[0].squeeze(0)) if 'speaker' not in self.task else features[0].squeeze(0)
                     elif self.run_apc:
                         # representations shape: (batch_size, layer, seq_len, feature)
@@ -427,7 +447,7 @@ class Downstream_Tester(Downstream_Solver):
                         features = self.up_sample_frames(features[0].squeeze(0)) if 'speaker' not in self.task else features[0].squeeze(0)
                     elif self.run_mockingjay:
                         # representations shape: (batch_size, layer, seq_len, feature)
-                        representations = self.mockingjay.forward(features, tile=False if 'speaker' in self.task else True, process_from_loader=True)
+                        representations = self.mockingjay.forward(features, tile=False if 'speaker' in self.task else True, process_from_loader=True, valid_layerids=self.valid_layerids, connectors=self.connectors)
                         features = self.up_sample_frames(features[0].squeeze(0)) if 'speaker' not in self.task else features[0].squeeze(0)
                     elif self.run_apc:
                         # representations shape: (batch_size, layer, seq_len, feature)

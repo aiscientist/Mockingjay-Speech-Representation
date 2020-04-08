@@ -664,7 +664,7 @@ class Tester(Solver):
                     plot_attention(layer_attentions.mean(dim=0).detach().cpu(), os.path.join(sample_dir, f'{layerid}-average.png'))
 
 
-    def forward(self, spec, all_layers=True, tile=True, process_from_loader=False):
+    def forward(self, spec, all_layers=True, tile=True, process_from_loader=False, valid_layerids=None, connectors=None):
         """ 
             Generation of the Mockingjay Model Representation
             Input: A batch of spectrograms: (batch_size, seq_len, hidden_size)
@@ -677,7 +677,7 @@ class Tester(Solver):
             where `seq_len` is the sequence length of the input `spec`.
         """
             
-        with torch.no_grad():
+        with torch.enable_grad():
             
             if not process_from_loader:
                 spec_stacked, pos_enc, attn_mask = self.process_MAM_data(spec=spec)
@@ -694,7 +694,7 @@ class Tester(Solver):
                 head_ids = [idx % head_num for idx in prune_headids]
                 head_mask[layer_ids, head_ids] = 0.0  
             
-            reps = self.mockingjay(spec_stacked, pos_enc, attention_mask=attn_mask, output_all_encoded_layers=all_layers, head_mask=head_mask)
+            reps = self.mockingjay(spec_stacked, pos_enc, attention_mask=attn_mask, output_all_encoded_layers=all_layers, head_mask=head_mask, valid_layerids=valid_layerids, connectors=connectors)
 
             if type(reps) is list:
                 reps = torch.stack(reps)

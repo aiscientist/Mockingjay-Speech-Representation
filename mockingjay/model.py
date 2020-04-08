@@ -294,16 +294,20 @@ class MockingjayEncoder(nn.Module):
                                   keep_multihead_output=keep_multihead_output)
         self.layer = nn.ModuleList([copy.deepcopy(layer) for _ in range(config.num_hidden_layers)])
 
-    def forward(self, hidden_states, attention_mask, output_all_encoded_layers=True, head_mask=None):
+    def forward(self, hidden_states, attention_mask, output_all_encoded_layers=True, head_mask=None, valid_layerids=None, connectors=None):
         all_encoder_layers = []
         all_attentions = []
         for i, layer_module in enumerate(self.layer):
+            if valid_layerids is not None and i not in valid_layerids:
+                continue
             hidden_states = layer_module(hidden_states, attention_mask, head_mask[i])
             if self.output_attentions:
                 attentions, hidden_states = hidden_states
                 all_attentions.append(attentions)
             if output_all_encoded_layers:
                 all_encoder_layers.append(hidden_states)
+            if connectors is not None and str(i) in connectors.keys():
+                hidden_states = torch.mm(hidden_states.view(-1, hidden_states.size(-1)), connectors[str(i)]).view_as(hidden_states)
         if not output_all_encoded_layers:
             all_encoder_layers.append(hidden_states)
         if self.output_attentions:
@@ -418,7 +422,7 @@ class MockingjayModel(MockingjayInitModel):
         """
         return [layer.attention.self.multihead_output for layer in self.encoder.layer]
 
-    def forward(self, spec_input, pos_enc, attention_mask=None, output_all_encoded_layers=True, head_mask=None):
+    def forward(self, spec_input, pos_enc, attention_mask=None, output_all_encoded_layers=True, head_mask=None, valid_layerids=None, connectors=None):
         if attention_mask is None:
             attention_mask = torch.ones_like(spec_input)
 
@@ -456,7 +460,9 @@ class MockingjayModel(MockingjayInitModel):
         encoded_layers = self.encoder(input_representations,
                                       extended_attention_mask,
                                       output_all_encoded_layers=output_all_encoded_layers,
-                                      head_mask=head_mask)
+                                      head_mask=head_mask,
+                                      valid_layerids=valid_layerids,
+                                      connectors=connectors)
         if self.output_attentions:
             all_attentions, encoded_layers = encoded_layers
         if not output_all_encoded_layers:
