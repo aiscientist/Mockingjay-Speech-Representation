@@ -488,8 +488,8 @@ class Trainer(Solver):
                 head_mask = head_mask.to(spec_masked.device)
             
             with torch.no_grad():
-                loss, pred_spec = self.model(spec_masked, pos_enc, mask_label, attn_mask, spec_stacked, head_mask)
-            epoch_loss.append(loss.item())
+                masked_spec_loss, adapattn_regu, pred_spec, zs = self.model(spec_masked, pos_enc, mask_label, attn_mask, spec_stacked, head_mask)
+            epoch_loss.append(masked_spec_loss.item())
 
         print(sum(epoch_loss) / len(epoch_loss))
 
