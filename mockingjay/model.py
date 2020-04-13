@@ -34,6 +34,9 @@ class MockingjayConfig(object):
         self.attention_probs_dropout_prob = config['mockingjay']['attention_probs_dropout_prob']
         self.initializer_range = config['mockingjay']['initializer_range']
         self.layer_norm_eps = float(config['mockingjay']['layer_norm_eps'])
+        self.adapattn = config['mockingjay']['adapattn']
+        self.adapattn_z = config['mockingjay']['adapattn_z']
+        self.adapattn_R = config['mockingjay']['adapattn_R']
 
 
 def prune_linear_layer(layer, index, dim=0):
@@ -145,7 +148,10 @@ class MockingjaySelfAttention(nn.Module):
         x = x.view(*new_x_shape)
         return x.permute(0, 2, 1, 3)
 
-    def forward(self, hidden_states, attention_mask, head_mask=None):
+    def forward(self, hidden_states, attention_mask, head_mask=None, adaptive_z=None, adaptive_R=None):
+        # adaptive_z: (n_head,)
+        # adaptive_R: int
+
         mixed_query_layer = self.query(hidden_states)
         mixed_key_layer = self.key(hidden_states)
         mixed_value_layer = self.value(hidden_states)
@@ -163,8 +169,19 @@ class MockingjaySelfAttention(nn.Module):
         attention_scores = attention_scores + attention_mask
         # attention_scores: (batch_size, head_num, seqlen, seqlen)
 
-        # Normalize the attention scores to probabilities.
-        attention_probs = nn.Softmax(dim=-1)(attention_scores)
+        if adaptive_z is None:
+            # Normalize the attention scores to probabilities.
+            attention_probs = nn.Softmax(dim=-1)(attention_scores)
+        else:
+            bsx, head_num, seqlen, _ = attention_scores.shape
+            absolute_positions = torch.arange(seqlen).expand(seqlen, seqlen)
+            relative_positions = (absolute_positions - absolute_positions.T).abs().unsqueeze(0)
+            # relative_positions: (1, seqlen, seqlen)
+            raw_mzx = (adaptive_z.view(-1, 1, 1) + adaptive_R - relative_positions.to(adaptive_z.device)) / adaptive_R
+            mzx = torch.min(torch.max(raw_mzx, torch.zeros(1).to(raw_mzx.device)), torch.ones(1).to(raw_mzx.device))
+            # mzx: (head_num, seqlen, seqlen)
+            attention_scores = attention_scores.exp() * mzx
+            attention_probs = attention_scores / attention_scores.sum(dim=-1, keepdim=True) + 1e-8
 
         # This is actually dropping out entire tokens to attend to, which might
         # seem a bit unusual, but is taken from the original Transformer paper.
@@ -227,8 +244,8 @@ class MockingjayAttention(nn.Module):
         self.self.num_attention_heads = self.self.num_attention_heads - len(heads)
         self.self.all_head_size = self.self.attention_head_size * self.self.num_attention_heads
 
-    def forward(self, input_tensor, attention_mask, head_mask=None):
-        self_output = self.self(input_tensor, attention_mask, head_mask)
+    def forward(self, input_tensor, attention_mask, head_mask=None, adaptive_z=None, adaptive_R=None):
+        self_output = self.self(input_tensor, attention_mask, head_mask, adaptive_z, adaptive_R)
         if self.output_attentions:
             attentions, self_output = self_output
         attention_output = self.output(self_output, input_tensor)
@@ -275,8 +292,8 @@ class MockingjayLayer(nn.Module):
         self.intermediate = MockingjayIntermediate(config)
         self.output = MockingjayOutput(config)
 
-    def forward(self, hidden_states, attention_mask, head_mask=None):
-        attention_output = self.attention(hidden_states, attention_mask, head_mask)
+    def forward(self, hidden_states, attention_mask, head_mask=None, adaptive_z=None, adaptive_R=None):
+        attention_output = self.attention(hidden_states, attention_mask, head_mask, adaptive_z, adaptive_R)
         if self.output_attentions:
             attentions, attention_output = attention_output
         intermediate_output = self.intermediate(attention_output)
@@ -294,11 +311,11 @@ class MockingjayEncoder(nn.Module):
                                   keep_multihead_output=keep_multihead_output)
         self.layer = nn.ModuleList([copy.deepcopy(layer) for _ in range(config.num_hidden_layers)])
 
-    def forward(self, hidden_states, attention_mask, output_all_encoded_layers=True, head_mask=None):
+    def forward(self, hidden_states, attention_mask, output_all_encoded_layers=True, head_mask=None, adaptive_z=None, adaptive_R=None):
         all_encoder_layers = []
         all_attentions = []
         for i, layer_module in enumerate(self.layer):
-            hidden_states = layer_module(hidden_states, attention_mask, head_mask[i])
+            hidden_states = layer_module(hidden_states, attention_mask, head_mask[i], adaptive_z[i], adaptive_R)
             if self.output_attentions:
                 attentions, hidden_states = hidden_states
                 all_attentions.append(attentions)
@@ -405,6 +422,11 @@ class MockingjayModel(MockingjayInitModel):
                                            keep_multihead_output=keep_multihead_output)
         self.apply(self.init_Mockingjay_weights)
 
+        if self.config.adapattn > 0:
+            self.adapattn_z = nn.Parameter(torch.ones(self.config.num_hidden_layers, self.config.num_attention_heads) * self.config.adapattn_z)
+        else:
+            self.adapattn_z = None
+
     def prune_heads(self, heads_to_prune):
         """ Prunes heads of the model.
             heads_to_prune: dict of {layer_num: list of heads to prune in this layer}
@@ -456,7 +478,9 @@ class MockingjayModel(MockingjayInitModel):
         encoded_layers = self.encoder(input_representations,
                                       extended_attention_mask,
                                       output_all_encoded_layers=output_all_encoded_layers,
-                                      head_mask=head_mask)
+                                      head_mask=head_mask,
+                                      adaptive_z=self.adapattn_z,
+                                      adaptive_R=self.config.adapattn_R)
         if self.output_attentions:
             all_attentions, encoded_layers = encoded_layers
         if not output_all_encoded_layers:
@@ -535,7 +559,9 @@ class MockingjayForMaskedAcousticModel(MockingjayInitModel):
         if spec_label is not None and mask_label is not None:
             assert mask_label.sum() > 0, 'Without any masking, loss might go NaN. Modify your data preprocessing (utility/mam.py)'
             masked_spec_loss = self.loss(pred_spec.masked_select(mask_label), spec_label.masked_select(mask_label))
-            return masked_spec_loss, pred_spec
+            if self.config.adapattn > 0:
+                adapattn_regu = self.config.adapattn / (self.config.num_hidden_layers * self.config.num_attention_heads) * self.Mockingjay.adapattn_z.sum()
+            return masked_spec_loss, adapattn_regu, pred_spec, self.Mockingjay.adapattn_z
         elif self.output_attentions:
             return all_attentions, pred_spec
         return pred_spec, pred_state

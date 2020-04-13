@@ -10,6 +10,10 @@
 ###############
 # IMPORTATION #
 ###############
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+
 import os
 import torch
 import copy
@@ -392,8 +396,9 @@ class Trainer(Solver):
                     step += 1
                     
                     spec_masked, pos_enc, mask_label, attn_mask, spec_stacked = self.process_data(batch)
-                    loss, pred_spec = self.model(spec_masked, pos_enc, mask_label, attn_mask, spec_stacked)
-                    
+                    masked_spec_loss, adapattn_regu, pred_spec, zs = self.model(spec_masked, pos_enc, mask_label, attn_mask, spec_stacked)
+                    loss = masked_spec_loss + adapattn_regu
+
                     # Accumulate Loss
                     if self.gradient_accumulation_steps > 1:
                         loss = loss / self.gradient_accumulation_steps
@@ -427,9 +432,14 @@ class Trainer(Solver):
                         if self.global_step % self.log_step == 0:
                             # Log
                             self.log.add_scalar('lr', self.optimizer.get_lr()[0], self.global_step)
-                            self.log.add_scalar('loss', (loss.item() * self.gradient_accumulation_steps), self.global_step)
+                            self.log.add_scalar('loss', masked_spec_loss.item(), self.global_step)
+                            self.log.add_scalar('regularization', adapattn_regu.item(), self.global_step)
                             self.log.add_scalar('gradient norm', grad_norm, self.global_step)
-                            progress.set_description("Loss %.4f" % (loss.item() * self.gradient_accumulation_steps))
+                            progress.set_description("Loss %.4f" % masked_spec_loss.item())
+
+                            fig = plt.figure(figsize=(15, 8))
+                            plt.boxplot(zs.detach().cpu())
+                            self.log.add_figure('zs_boxplot', fig, global_step=self.global_step)
 
                         if self.global_step % self.save_step == 0:
                             self.save_model('mockingjay')
