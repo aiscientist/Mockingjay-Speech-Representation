@@ -17,9 +17,9 @@ mockingjay:
   mask_frequency: 0                                     # mask maximum this amount of frequency bands, set to 0 for no frequency mask
   noise_proportion: 0.00                                # for this percentage of the time, Gaussian noise will be applied on all frames during MAM training, set to 0 for no noise
   prune_headids: None                                   # Usage: 0,1,2,12-15 will prune headids [0,1,2,12,13,14]. headids = layerid * head_num + headid_in_layer
-  adapattn: 0.001
-  adapattn_z: 10
-  adapattn_R: 5
+  adapattn: 0.0005
+  adapattn_z: 20
+  adapattn_R: 10
 
 
 optimizer: 
