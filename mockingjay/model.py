@@ -181,7 +181,7 @@ class MockingjaySelfAttention(nn.Module):
             mzx = torch.min(torch.max(raw_mzx, torch.zeros(1).to(raw_mzx.device)), torch.ones(1).to(raw_mzx.device))
             # mzx: (head_num, seqlen, seqlen)
             attention_scores = attention_scores.exp() * mzx
-            attention_probs = attention_scores / attention_scores.sum(dim=-1, keepdim=True) + 1e-8
+            attention_probs = attention_scores / (attention_scores.sum(dim=-1, keepdim=True) + 1e-8)
 
         # This is actually dropping out entire tokens to attend to, which might
         # seem a bit unusual, but is taken from the original Transformer paper.
