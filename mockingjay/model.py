@@ -169,10 +169,7 @@ class MockingjaySelfAttention(nn.Module):
         attention_scores = attention_scores + attention_mask
         # attention_scores: (batch_size, head_num, seqlen, seqlen)
 
-        if adaptive_z is None:
-            # Normalize the attention scores to probabilities.
-            attention_probs = nn.Softmax(dim=-1)(attention_scores)
-        else:
+        if adaptive_z is not None:
             bsx, head_num, seqlen, _ = attention_scores.shape
             absolute_positions = torch.arange(seqlen).expand(seqlen, seqlen)
             relative_positions = (absolute_positions - absolute_positions.T).abs().unsqueeze(0)
@@ -180,8 +177,11 @@ class MockingjaySelfAttention(nn.Module):
             raw_mzx = (adaptive_z.view(-1, 1, 1) + adaptive_R - relative_positions.to(adaptive_z.device)) / adaptive_R
             mzx = torch.min(torch.max(raw_mzx, torch.zeros(1).to(raw_mzx.device)), torch.ones(1).to(raw_mzx.device))
             # mzx: (head_num, seqlen, seqlen)
-            attention_scores = attention_scores.exp() * mzx
-            attention_probs = attention_scores / (attention_scores.sum(dim=-1, keepdim=True) + 1e-8)
+            mzx = -10000 + mzx * 10000
+            # This is for numerical stability
+            attention_scores = attention_scores + mzx
+        
+        attention_probs = nn.Softmax(dim=-1)(attention_scores)
 
         # This is actually dropping out entire tokens to attend to, which might
         # seem a bit unusual, but is taken from the original Transformer paper.
